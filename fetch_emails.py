@@ -23,6 +23,7 @@ results = []
 WEBSITE_API_URL = "http://localhost:3000/api/events"  # Replace with your API endpoint
 
 
+
 def send_data_to_website(event_details):
     """
     Send extracted event details to the website API.
@@ -54,41 +55,27 @@ def authenticate_calendar_api():
     service = build('calendar', 'v3', credentials=creds)
     return service
 
-# def create_event(service, event_details):
-#     try:
-        
-#         description = f"""
-#         Booking Reference: {event_details.get('Booking Reference', 'Not Provided')}
-#         Title: {event_details.get('Title', 'Not Provided')}
-#         Location: {event_details.get('Location', 'Not Provided')}
-#         Travel Date: {event_details.get('Travel Date', 'Not Provided')}
-#         Lead Traveler Name: {event_details.get('Lead Traveler Name', 'Not Provided')}
-#         Hotel Pickup: {event_details.get('Hotel Pickup', 'Not Provided')}
-#         Status: {event_details.get('Status', 'Not Provided')}
-#         """
-        
-#         start_datetime = event_details.get('start_datetime', datetime.datetime.now().isoformat())
-#         end_datetime = event_details.get('end_datetime', (datetime.datetime.now() + datetime.timedelta(hours=1)).isoformat())
 
-#         event = {
-#             'summary': event_details.get('Title', 'New Booking'),
-#             'description': description.strip(),
-#             'start': {
-#                 'dateTime': start_datetime,
-#                 'timeZone': 'Asia/Kolkata',
-#             },
-#             'end': {
-#                 'dateTime': end_datetime,
-#                 'timeZone': 'Asia/Kolkata',
-#             },
-#         }
 
-        
-#         created_event = service.events().insert(calendarId='primary', body=event).execute()
-#         print(f"Event created: {created_event.get('htmlLink')}")
 
-#     except Exception as e:
-#         print(f"Error creating event: {e}")
+
+
+def parse_travel_date(travel_date_str):
+    """
+    Attempt to parse the travel date from the provided string using multiple formats.
+    """
+    formats = [
+        '%a, %b %d, %Y',  # Example: Tue, Feb 18, 2025
+        '%b %d, %Y',       # Example: Feb 18, 2025
+        '%Y-%m-%d'         # Example: 2025-02-18 (ISO format)
+    ]
+    for fmt in formats:
+        try:
+            return datetime.datetime.strptime(travel_date_str, fmt)
+        except ValueError:
+            continue
+    raise ValueError(f"Date format not recognized: {travel_date_str}")
+
 
 def create_event(service, event_details_list):
     """
@@ -100,7 +87,6 @@ def create_event(service, event_details_list):
         if isinstance(event_details_list, dict):
             event_details_list = [event_details_list]
         elif isinstance(event_details_list, str):
-            import json
             event_details_list = json.loads(event_details_list)
 
         if not isinstance(event_details_list, list):
@@ -115,19 +101,38 @@ def create_event(service, event_details_list):
 
             booking_reference = event_details.get('Booking Reference', 'Not Provided')
 
-            if event_details.get('Status', '').lower() == 'confirmed':
-                existing_events = service.events().list(
-                    calendarId='primary',
-                    singleEvents=True,
-                    q=booking_reference,
-                ).execute().get('items', [])
+            # Skip events with "canceled" or "amended" statuses
+            status = event_details.get('Status', '').lower()
+            if status in ['canceled', 'amended']:
+                print(f"Skipping event creation for status '{status}' with Booking Reference '{booking_reference}'.")
+                continue
 
-                if existing_events:
-                    print(f"Event with Booking Reference '{booking_reference}' already exists. Skipping creation.")
-                    continue
-                else:
-                    print(f"No existing event found for Booking Reference '{booking_reference}'. Proceeding with creation.")
+            # Check if an event with the same Booking Reference already exists
+            existing_events = service.events().list(
+                calendarId='primary',
+                singleEvents=True,
+                q=booking_reference,
+            ).execute().get('items', [])
 
+            if existing_events:
+                print(f"Event with Booking Reference '{booking_reference}' already exists. Skipping creation.")
+                continue
+
+            # Parse the Travel Date and calculate the event start and end datetime
+            travel_date_str = event_details.get('Travel Date', None)
+            if not travel_date_str:
+                print(f"Missing Travel Date for Booking Reference '{booking_reference}'. Skipping event.")
+                continue
+
+            try:
+                travel_date = parse_travel_date(travel_date_str)
+                start_datetime = travel_date.replace(hour=9, minute=0).isoformat()
+                end_datetime = travel_date.replace(hour=10, minute=0).isoformat()
+            except ValueError as e:
+                print(f"Error parsing Travel Date '{travel_date_str}' for Booking Reference '{booking_reference}': {e}")
+                continue
+
+            # Build the event description
             description = f"""
             Booking Reference: {event_details.get('Booking Reference', 'Not Provided')}
             Title: {event_details.get('Title', 'New Booking')}
@@ -138,9 +143,7 @@ def create_event(service, event_details_list):
             Status: {event_details.get('Status', 'Not Provided')}
             """
 
-            start_datetime = event_details.get('start_datetime', datetime.datetime.now().isoformat())
-            end_datetime = event_details.get('end_datetime', (datetime.datetime.now() + datetime.timedelta(hours=1)).isoformat())
-
+            # Create the event body
             event = {
                 'summary': event_details.get('Title', 'New Booking'),
                 'description': description.strip(),
@@ -154,11 +157,14 @@ def create_event(service, event_details_list):
                 },
             }
 
+            # Insert the event into the Google Calendar
             created_event = service.events().insert(calendarId='primary', body=event).execute()
             print(f"Event created: {created_event.get('htmlLink')}")
 
     except Exception as e:
         print(f"Error creating events: {e}")
+
+
 
 
 
