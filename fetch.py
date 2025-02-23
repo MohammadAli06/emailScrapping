@@ -38,9 +38,6 @@ def main():
         # Wait for one hour (3600 seconds) before running again
         time.sleep(3600)
 
-if __name__ == "__main__":
-    main()
-
 def send_data_to_website(event_details):
     """
     Send extracted event details to the website API.
@@ -333,6 +330,6 @@ def fetch_emails():
         print(f"Error fetching emails: {e}")
 
 
-
 if __name__ == "__main__":
     fetch_emails()
+    main()
