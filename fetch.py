@@ -12,9 +12,9 @@ import pickle
 import google.generativeai as genai
 import json
 import requests
+import time
 
-
-GENAI_API_KEY = "AIzaSyB6vX8Lddi4qMJlwnoiBxXEoII7gcwfw84"
+GENAI_API_KEY = "AIzaSyByZukGhz0fp6gftgrrmwbUB4BymROAp84"
 genai.configure(api_key=GENAI_API_KEY)
 model = genai.GenerativeModel("gemini-1.5-pro-latest")
 
@@ -22,7 +22,24 @@ results = []
 
 WEBSITE_API_URL = "http://localhost:3000/api/events"  # Replace with your API endpoint
 
+def main():
+    """
+    Main function to fetch emails, process them, and create/update events.
+    Runs once per hour.
+    """
+    while True:  # Infinite loop to run the code repeatedly
+        try:
+            print("Starting email fetch and event processing...")
+            fetch_emails()  # Call your existing function
+            print("Processing completed. Waiting for the next run...")
+        except Exception as e:
+            print(f"An error occurred during processing: {e}")
+        
+        # Wait for one hour (3600 seconds) before running again
+        time.sleep(3600)
 
+if __name__ == "__main__":
+    main()
 
 def send_data_to_website(event_details):
     """
@@ -31,12 +48,11 @@ def send_data_to_website(event_details):
     try:
         response = requests.post(WEBSITE_API_URL, json=event_details)
         if response.status_code == 200:
-            print(f"Data successfully sent to website: {response.json()}")
+            print(f"Data successfully sent to website: ")
         else:
             print(f"Failed to send data to website. Status code: {response.status_code}, Response: {response.text}")
     except Exception as e:
         print(f"Error sending data to website: {e}")
-
 
 def authenticate_calendar_api():
     SCOPES = ['https://www.googleapis.com/auth/calendar']
@@ -55,11 +71,6 @@ def authenticate_calendar_api():
     service = build('calendar', 'v3', credentials=creds)
     return service
 
-
-
-
-
-
 def parse_travel_date(travel_date_str):
     """
     Attempt to parse the travel date from the provided string using multiple formats.
@@ -76,14 +87,37 @@ def parse_travel_date(travel_date_str):
             continue
     raise ValueError(f"Date format not recognized: {travel_date_str}")
 
+def update_event_to_canceled(service, booking_reference):
+    """
+    Update the event's title and status to "Canceled" if the event with the given Booking Reference exists.
+    """
+    try:
+        print("inside update")
+        # Search for an existing event with the same Booking Reference
+        existing_events = service.events().list(
+            calendarId='primary',
+            singleEvents=True,
+            q=booking_reference,
+        ).execute().get('items', [])
+
+        if existing_events:
+            for event in existing_events:
+                if "confirmed" in event.get('description', ''):
+                    event['summary'] = f"Canceled - {event['summary']}"
+                    event['description'] += f"\nUpdated Status: Canceled"
+                    service.events().update(calendarId='primary', eventId=event['id'], body=event).execute()
+                    print(f"Updated event to 'Canceled': {event.get('htmlLink')}")
+        else:
+            print(f"No event found for Booking Reference '{booking_reference}'.")
+    except Exception as e:
+        print(f"Error updating event to 'Canceled': {e}")
 
 def create_event(service, event_details_list):
     """
-    Process multiple event details and create events dynamically.
-    Handles incorrect input gracefully.
+    Process multiple event details and create or update events dynamically.
+    Handles "Confirmed" and "Canceled" statuses.
     """
     try:
-        # Handle cases where input is not a list
         if isinstance(event_details_list, dict):
             event_details_list = [event_details_list]
         elif isinstance(event_details_list, str):
@@ -101,9 +135,17 @@ def create_event(service, event_details_list):
 
             booking_reference = event_details.get('Booking Reference', 'Not Provided')
 
-            # Skip events with "canceled" or "amended" statuses
+            # Check the event status
             status = event_details.get('Status', '').lower()
-            if status in ['canceled', 'amended']:
+            print(f"Checking event status for {booking_reference}: {status}")  # <-- Add this line
+
+            if status == 'cancelled':
+                print("helo in if")
+                # If event is canceled, check and update the event
+                update_event_to_canceled(service,booking_reference)
+                continue
+
+            if status == 'amended':
                 print(f"Skipping event creation for status '{status}' with Booking Reference '{booking_reference}'.")
                 continue
 
@@ -157,16 +199,11 @@ def create_event(service, event_details_list):
                 },
             }
 
-            # Insert the event into the Google Calendar
             created_event = service.events().insert(calendarId='primary', body=event).execute()
             print(f"Event created: {created_event.get('htmlLink')}")
 
     except Exception as e:
         print(f"Error creating events: {e}")
-
-
-
-
 
 
 def extract_valid_json(response_text):
@@ -180,7 +217,6 @@ def extract_valid_json(response_text):
     except json.JSONDecodeError as e:
         print(f"Error parsing the JSON response: {e}")
         return {}
-
 
 def extract_booking_details_with_genai(email_content):
     prompt = f"""Extract the following event details from the given text:
@@ -213,14 +249,10 @@ def extract_booking_details_with_genai(email_content):
     """
 
     try:
-        
         response = model.generate_content(prompt)
 
         if response and hasattr(response, 'text') and response.text.strip():
             raw_response = response.text.strip()
-            # print("line162")
-            # print(response)
-            
             return extract_valid_json(raw_response)  
         else:
             print("Error: Empty or invalid response from Gemini AI.")
@@ -232,14 +264,12 @@ def extract_booking_details_with_genai(email_content):
 
 def extract_booking_details_with_regex(email_content):
     try:
-        
         booking_ref = re.search(r"Booking Reference:\s*(#\S+)", email_content)
         tour_name = re.search(r"Amended\s*(.*)", email_content)
         location = re.search(r"Location:\s*(.*)", email_content)
         travel_date = re.search(r"Travel Date:\s*(.*)", email_content)
         lead_traveler = re.search(r"Lead traveler name:\s*(.*)", email_content)
         hotel_pickup = re.search(r"Hotel Pickup:\s*(.*)", email_content)
-        
         
         details = {
             "Booking Reference": booking_ref.group(1) if booking_ref else "Not Found",
@@ -249,7 +279,6 @@ def extract_booking_details_with_regex(email_content):
             "Lead Traveler Name": lead_traveler.group(1).strip() if lead_traveler else "Not Found",
             "Hotel Pickup": hotel_pickup.group(1).strip() if hotel_pickup else "Not Found",
         }
-
         
         try:
             travel_datetime = datetime.datetime.strptime(details["Travel Date"], "%a, %b %d, %Y")
@@ -265,7 +294,6 @@ def extract_booking_details_with_regex(email_content):
     except Exception as e:
         print(f"Error extracting booking details: {e}")
         return None
-
 
 def fetch_emails():
     gmail = Gmail()  
@@ -291,19 +319,19 @@ def fetch_emails():
                 if extracted_details:
                     results.append(extracted_details)
                 else:
-                    print(f"Failed to extract details from email: {msg.id}")
+                    print(f"Failed to extract details from email: {msg.subject}")
 
-        if results:
-            service = authenticate_calendar_api()
-            for details in results:
-                # Create an event in Google Calendar
-                create_event(service, details)
+        # Send extracted data to the website API
+        for event in results:
+            send_data_to_website(event)
 
-                # Send data to website
-                send_data_to_website(details)
+        # Authenticate and create or update events
+        service = authenticate_calendar_api()
+        create_event(service, results)
 
     except Exception as e:
         print(f"Error fetching emails: {e}")
+
 
 
 if __name__ == "__main__":
